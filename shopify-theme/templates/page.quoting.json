@@ -3,10 +3,12 @@
     "main": {
       "type": "quoting-portal",
       "settings": {
-        "api_base": "https://REPLACE-ME.up.railway.app",
-        "portal_token": "REPLACE-WITH-PORTAL-TOKEN",
-        "currency": "AUD",
-        "tax_rate": "0.10"
+        "api_base": "https://nuvio-quoting-portal-production.up.railway.app",
+        "google_maps_api_key": "",
+        "admin_url": "",
+        "bundles_url": "",
+        "stock_url": "",
+        "pricelist_url": ""
       }
     }
   },
