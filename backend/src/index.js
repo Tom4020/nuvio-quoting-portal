@@ -8,6 +8,7 @@ import { router as quotesRouter } from './routes/quotes.js';
 import { router as posRouter } from './routes/purchaseOrders.js';
 import { router as ordersRouter } from './routes/orders.js';
 import { router as shopifyRouter } from './routes/shopify.js';
+import { router as authRouter } from './routes/auth.js';
 
 const app = express();
 
@@ -26,6 +27,9 @@ app.use(cors({
 
 // Health check (no auth) — Railway uses this
 app.get('/healthz', (_req, res) => res.json({ ok: true, ts: new Date().toISOString() }));
+
+// Shopify OAuth install + callback (no auth — used once to mint admin token)
+app.use('/auth', authRouter);
 
 // Everything under /api requires the shared portal token
 app.use('/api', requirePortalToken);
