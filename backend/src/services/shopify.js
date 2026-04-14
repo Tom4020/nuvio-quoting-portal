@@ -36,22 +36,61 @@ async function shopify(path, { method = 'GET', body } = {}) {
   return data;
 }
 
-// Search products. Supports ?q= query string (title) and pagination via page_info later.
+// Search products via GraphQL (supports substring + SKU search; REST `title=` is exact-match only).
 export async function searchProducts({ q = '', limit = 25 } = {}) {
-  const params = new URLSearchParams({ limit: String(limit) });
-  if (q) params.set('title', q);
-  const data = await shopify(`/products.json?${params.toString()}`);
-  // Flatten to variants so the quote builder can pick a specific variant
+  const token = process.env.SHOPIFY_ADMIN_TOKEN;
+  const domain = process.env.SHOPIFY_STORE_DOMAIN;
+  if (!token) throw new Error('SHOPIFY_ADMIN_TOKEN not set');
+  if (!domain) throw new Error('SHOPIFY_STORE_DOMAIN not set');
+
+  // Build Shopify search query: match title or sku substring, or fall back to all.
+  const esc = s => String(s).replace(/["\\]/g, '\\$&');
+  const queryString = q
+    ? `title:*${esc(q)}* OR sku:*${esc(q)}*`
+    : '';
+
+  const gql = {
+    query: `query Search($q: String, $n: Int!) {
+      products(first: $n, query: $q) {
+        edges { node {
+          id
+          title
+          featuredImage { url }
+          variants(first: 25) { edges { node { id title sku price } } }
+        } }
+      }
+    }`,
+    variables: { q: queryString || null, n: limit }
+  };
+
+  const res = await fetch(`https://${domain}/admin/api/${API_VERSION}/graphql.json`, {
+    method: 'POST',
+    headers: {
+      'X-Shopify-Access-Token': token,
+      'Content-Type': 'application/json',
+      'Accept': 'application/json'
+    },
+    body: JSON.stringify(gql)
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.errors) {
+    const err = new Error(`Shopify GraphQL search failed (${res.status})`);
+    err.status = res.status;
+    err.body = data;
+    throw err;
+  }
+
+  const toNumericId = gid => Number(String(gid).split('/').pop());
   const variants = [];
-  for (const p of data.products || []) {
-    for (const v of p.variants || []) {
+  for (const { node: p } of data.data.products.edges) {
+    for (const { node: v } of p.variants.edges) {
       variants.push({
-        product_id: p.id,
-        variant_id: v.id,
+        product_id: toNumericId(p.id),
+        variant_id: toNumericId(v.id),
         title: p.title + (v.title && v.title !== 'Default Title' ? ` — ${v.title}` : ''),
         sku: v.sku,
         price: Number(v.price || 0),
-        image: p.image?.src || null
+        image: p.featuredImage?.url || null
       });
     }
   }
