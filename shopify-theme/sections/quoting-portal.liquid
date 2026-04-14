@@ -1,0 +1,87 @@
+{% comment %}
+  Nuvio Quoting Portal — Shopify theme section
+  Renders the quoting + PO + order management UI. All data lives in Railway.
+
+  Schema settings let you configure the Railway API domain and portal token
+  without touching code.
+{% endcomment %}
+
+{{ 'quoting-portal.css' | asset_url | stylesheet_tag }}
+
+<div
+  id="nuvio-quoting-portal"
+  data-api-base="{{ section.settings.api_base }}"
+  data-portal-token="{{ section.settings.portal_token }}"
+  data-currency="{{ section.settings.currency | default: 'AUD' }}"
+  data-tax-rate="{{ section.settings.tax_rate | default: 0.10 }}"
+>
+  <header class="qp-header">
+    <h1>Nuvio Quoting Portal</h1>
+    <nav class="qp-tabs">
+      <button data-tab="quotes" class="qp-tab qp-tab--active">Quotes</button>
+      <button data-tab="purchase-orders" class="qp-tab">Purchase Orders</button>
+      <button data-tab="orders" class="qp-tab">Orders</button>
+    </nav>
+  </header>
+
+  <section class="qp-panel" data-panel="quotes">
+    <div class="qp-panel__toolbar">
+      <button class="qp-btn qp-btn--primary" data-action="new-quote">+ New quote</button>
+      <input type="search" placeholder="Search quotes…" class="qp-input" data-search="quotes" />
+    </div>
+    <div class="qp-list" data-list="quotes">Loading…</div>
+  </section>
+
+  <section class="qp-panel qp-hidden" data-panel="purchase-orders">
+    <div class="qp-panel__toolbar">
+      <button class="qp-btn qp-btn--primary" data-action="new-po">+ New purchase order</button>
+      <input type="search" placeholder="Search POs…" class="qp-input" data-search="purchase-orders" />
+    </div>
+    <div class="qp-list" data-list="purchase-orders">Loading…</div>
+  </section>
+
+  <section class="qp-panel qp-hidden" data-panel="orders">
+    <div class="qp-list" data-list="orders">Loading…</div>
+  </section>
+
+  {%- comment -%} Modal for building / viewing a quote {%- endcomment -%}
+  <div class="qp-modal qp-hidden" data-modal>
+    <div class="qp-modal__backdrop" data-close-modal></div>
+    <div class="qp-modal__panel" data-modal-body></div>
+  </div>
+</div>
+
+<script src="{{ 'quoting-portal.js' | asset_url }}" defer></script>
+
+{% schema %}
+{
+  "name": "Quoting Portal",
+  "settings": [
+    {
+      "type": "url",
+      "id": "api_base",
+      "label": "Railway API base URL",
+      "info": "e.g. https://nuvio-quoting.up.railway.app (no trailing slash)"
+    },
+    {
+      "type": "text",
+      "id": "portal_token",
+      "label": "Portal shared token",
+      "info": "Must match PORTAL_TOKEN set in Railway. Treat as a secret — only use on a password-protected staff page."
+    },
+    {
+      "type": "text",
+      "id": "currency",
+      "label": "Currency",
+      "default": "AUD"
+    },
+    {
+      "type": "text",
+      "id": "tax_rate",
+      "label": "Default tax rate (0-1)",
+      "default": "0.10"
+    }
+  ],
+  "presets": [{ "name": "Quoting Portal" }]
+}
+{% endschema %}
