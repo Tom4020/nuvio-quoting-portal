@@ -76,6 +76,53 @@ export async function sendProformaEmail(email, name, draftId) {
   });
 }
 
+// Send a purchase order PDF as an email attachment.
+// `to` is the recipient email; `po` and `company` are used to compose the body.
+// `pdfBuffer` is the rendered PDF (as a Buffer).
+// `audience` is 'supplier' | 'self' — only changes wording.
+export async function sendPurchaseOrderEmail({ to, po, company, pdfBuffer, audience = 'supplier' }) {
+  const t = getTransporter();
+  if (!t) throw new Error('SMTP not configured');
+
+  const fromEmail = process.env.FROM_EMAIL || 'noreply@nuvio.com';
+  const companyName = (company && company.name) || process.env.COMPANY_NAME || 'Nuvio';
+  const contactName = (company && company.contact) || '';
+  const phone = (company && company.phone) || '';
+  const email = (company && company.email) || fromEmail;
+
+  const supplierName = po.vendor || 'Supplier';
+  const subject = audience === 'self'
+    ? `[Copy] Purchase Order ${po.poNumber} — ${supplierName}`
+    : `Purchase Order ${po.poNumber} from ${companyName}`;
+
+  const greeting = audience === 'self'
+    ? `Hi ${contactName || 'team'},`
+    : `Hi ${(po.supplier && po.supplier.contact) || supplierName},`;
+
+  const body = audience === 'self'
+    ? `Attached is a copy of purchase order ${po.poNumber} for ${supplierName}.`
+    : `Please find attached purchase order ${po.poNumber}.\n\n`
+      + `Total: ${po.currency || 'AUD'} ${Number(po.total || 0).toFixed(2)}\n`
+      + (po.paymentTerms ? `Payment terms: ${po.paymentTerms}\n` : '')
+      + (po.supplierQuote ? `Supplier quote ref: ${po.supplierQuote}\n` : '')
+      + `\nLet us know if you have any questions.`;
+
+  const signature = `\n\nThanks,\n${contactName || companyName}\n${companyName}` + (phone ? `\n${phone}` : '') + `\n${email}`;
+
+  await t.sendMail({
+    from: fromEmail,
+    to,
+    subject,
+    text: `${greeting}\n\n${body}${signature}`,
+    html: `<p>${greeting}</p><p>${body.replace(/\n/g, '<br/>')}</p><p>${signature.trim().replace(/\n/g, '<br/>')}</p>`,
+    attachments: [{
+      filename: `${po.poNumber}.pdf`,
+      content: pdfBuffer,
+      contentType: 'application/pdf'
+    }]
+  });
+}
+
 export async function sendLowStockAlert(items) {
   const t = getTransporter();
   if (!t) throw new Error('SMTP not configured');
