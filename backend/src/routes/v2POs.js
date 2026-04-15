@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { query } from '../db.js';
 import { requireSession } from '../middleware/session.js';
+import { streamPurchaseOrderPdf } from '../services/pdf.js';
 
 export const router = Router();
 
@@ -63,6 +64,125 @@ router.post('/pos', async (req, res) => {
     res.json(pos);
   } catch (err) {
     console.error('Error saving POs:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Helper: load and save kv_store blob
+async function kvGet(key, fallback) {
+  const { rows } = await query('SELECT value FROM kv_store WHERE key = $1', [key]);
+  return rows[0]?.value ?? fallback;
+}
+async function kvSet(key, value) {
+  await query(
+    `INSERT INTO kv_store (key, value, updated_at)
+     VALUES ($1, $2, NOW())
+     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
+    [key, JSON.stringify(value)]
+  );
+}
+
+// POST /make-po — generate one PO per vendor from a quote's items
+// Body: { quoteNumber, items: [{ vendor, sku, title, description, quantity, buy_ex }], notes? }
+router.post('/make-po', async (req, res) => {
+  const { quoteNumber, items, notes } = req.body || {};
+
+  if (!quoteNumber || !Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({ error: 'quoteNumber and items required' });
+  }
+
+  try {
+    // Group items by vendor
+    const byVendor = {};
+    for (const it of items) {
+      const vendor = (it.vendor || 'Unknown').trim() || 'Unknown';
+      if (!byVendor[vendor]) byVendor[vendor] = [];
+      const qty = Number(it.quantity) || 0;
+      const buy = Number(it.buy_ex) || 0;
+      byVendor[vendor].push({
+        sku: it.sku || '',
+        title: it.title || '',
+        description: it.description || it.title || '',
+        quantity: qty,
+        buy_ex: buy,
+        line_total: +(qty * buy).toFixed(2)
+      });
+    }
+
+    // Load suppliers + existing POs
+    const suppliers = await kvGet('suppliers', {});
+    const existingPOs = await kvGet('pos', []);
+    const posArr = Array.isArray(existingPOs) ? existingPOs : [];
+
+    const created = [];
+
+    // Generate PO number pattern: PO-{quoteNumber}-{vendorSlug}
+    for (const [vendor, vItems] of Object.entries(byVendor)) {
+      const vendorSlug = String(vendor)
+        .toUpperCase()
+        .replace(/[^A-Z0-9]+/g, '-')
+        .replace(/(^-|-$)/g, '')
+        .slice(0, 12) || 'VENDOR';
+
+      // Avoid collisions: suffix with counter if needed
+      let base = `PO-${quoteNumber}-${vendorSlug}`;
+      let poNumber = base;
+      let n = 1;
+      while (posArr.some(p => p.poNumber === poNumber)) {
+        n += 1;
+        poNumber = `${base}-${n}`;
+      }
+
+      const subtotal = +vItems.reduce((s, it) => s + it.line_total, 0).toFixed(2);
+      const gst = +(subtotal * 0.10).toFixed(2);
+      const total = +(subtotal + gst).toFixed(2);
+
+      const po = {
+        poNumber,
+        quoteNumber,
+        vendor,
+        supplier: suppliers[vendor] || null,
+        date: new Date().toISOString(),
+        status: 'draft',
+        currency: 'AUD',
+        items: vItems,
+        subtotal,
+        gst,
+        total,
+        notes: notes || '',
+        received: {} // { variantId: qty } for /receive-po
+      };
+
+      posArr.push(po);
+      created.push(po);
+    }
+
+    await kvSet('pos', posArr);
+
+    res.json({ ok: true, pos: created });
+  } catch (err) {
+    console.error('Make PO error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /pos/:poNumber/pdf — stream the PO as a PDF
+router.get('/pos/:poNumber/pdf', async (req, res) => {
+  try {
+    const pos = await kvGet('pos', []);
+    const posArr = Array.isArray(pos) ? pos : [];
+    const po = posArr.find(p => p.poNumber === req.params.poNumber);
+    if (!po) return res.status(404).json({ error: 'PO not found' });
+
+    // Re-fetch supplier in case it was updated after PO was created
+    if (!po.supplier && po.vendor) {
+      const suppliers = await kvGet('suppliers', {});
+      po.supplier = suppliers[po.vendor] || null;
+    }
+
+    streamPurchaseOrderPdf(res, { po });
+  } catch (err) {
+    console.error('PO PDF error:', err);
     res.status(500).json({ error: err.message });
   }
 });
