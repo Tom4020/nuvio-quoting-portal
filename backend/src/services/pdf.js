@@ -120,18 +120,9 @@ async function fetchImageBuffer(url) {
   }
 }
 
-// Stream a PDF purchase order to `res`.
-// Inputs: po = { poNumber, quoteNumber, date, vendor, supplier, paymentTerms, items, subtotal, gst, total, notes, currency }
-// supplier = { contact, email, phone, address, paymentTerms, notes }
-// items = [{ sku, description, quantity, buy_ex, line_total, image_url }]
-// company (optional, from kv_store company_details) = { name, tradingName, contact, email, phone, address, abn, website }
-export async function streamPurchaseOrderPdf(res, { po, company: companyIn } = {}) {
-  const doc = new PDFDocument({ size: 'A4', margin: 50 });
+// Build the PO onto a pre-created PDFDocument. Shared by the stream and buffer exports.
+async function buildPurchaseOrderPdf(doc, { po, company: companyIn } = {}) {
   const currency = po.currency || 'AUD';
-
-  res.setHeader('Content-Type', 'application/pdf');
-  res.setHeader('Content-Disposition', `inline; filename="${po.poNumber}.pdf"`);
-  doc.pipe(res);
 
   // Pre-fetch all item images in parallel so rendering stays synchronous
   const images = await Promise.all(
@@ -165,6 +156,9 @@ export async function streamPurchaseOrderPdf(res, { po, company: companyIn } = {
     .text(`Date: ${new Date(po.date || Date.now()).toLocaleDateString('en-AU')}`, 300, doc.y, { align: 'right', width: 245 });
   if (po.quoteNumber) {
     doc.text(`Quote ref: ${po.quoteNumber}`, 300, doc.y, { align: 'right', width: 245 });
+  }
+  if (po.supplierQuote) {
+    doc.text(`Supplier quote: ${po.supplierQuote}`, 300, doc.y, { align: 'right', width: 245 });
   }
   const terms = po.paymentTerms || (po.supplier && po.supplier.paymentTerms) || '';
   if (terms) {
@@ -264,6 +258,28 @@ export async function streamPurchaseOrderPdf(res, { po, company: companyIn } = {
     doc.fontSize(10).fillColor('#000').text('Notes', 50, doc.y, { underline: true });
     doc.fontSize(9).fillColor('#333').text(po.notes, 50, doc.y, { width: 495 });
   }
+}
 
+// Stream the PO PDF to an Express response
+export async function streamPurchaseOrderPdf(res, { po, company } = {}) {
+  const doc = new PDFDocument({ size: 'A4', margin: 50 });
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `inline; filename="${po.poNumber}.pdf"`);
+  doc.pipe(res);
+  await buildPurchaseOrderPdf(doc, { po, company });
   doc.end();
+}
+
+// Render the PO PDF to a Buffer (used for emailing as attachment)
+export async function renderPurchaseOrderPdfBuffer({ po, company } = {}) {
+  const doc = new PDFDocument({ size: 'A4', margin: 50 });
+  const chunks = [];
+  doc.on('data', c => chunks.push(c));
+  const done = new Promise((resolve, reject) => {
+    doc.on('end', () => resolve(Buffer.concat(chunks)));
+    doc.on('error', reject);
+  });
+  await buildPurchaseOrderPdf(doc, { po, company });
+  doc.end();
+  return done;
 }
