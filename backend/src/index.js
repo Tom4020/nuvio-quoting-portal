@@ -20,6 +20,7 @@ import { router as customersRouter } from './routes/customers.js';
 import { router as clientsRouter } from './routes/clients.js';
 import { router as productsRouter } from './routes/products.js';
 import { router as v2POsRouter } from './routes/v2POs.js';
+import { router as v2SuppliersRouter } from './routes/v2Suppliers.js';
 import { router as costsRouter } from './routes/costs.js';
 import { router as forecastRouter } from './routes/forecast.js';
 import { router as v2OrdersRouter } from './routes/v2Orders.js';
@@ -60,8 +61,11 @@ app.use('/clients', requireSession, clientsRouter);
 // For now, mount at root and let router handle all paths
 app.use('/', requireSession, productsRouter);
 
-// POs: /pos, /receive-po
+// POs: /pos, /receive-po, /make-po, /pos/:poNumber/pdf
 app.use('/', requireSession, v2POsRouter);
+
+// Suppliers: /suppliers, /suppliers/:vendor
+app.use('/', requireSession, v2SuppliersRouter);
 
 // Costs: /costs, /variant-costs, /variant-supplier-codes
 app.use('/', requireSession, costsRouter);
