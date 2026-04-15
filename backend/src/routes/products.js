@@ -1,4 +1,4 @@
-\import { Router } from 'express';
+import { Router } from 'express';
 import { requireAdmin } from '../middleware/session.js';
 
 export const router = Router();
