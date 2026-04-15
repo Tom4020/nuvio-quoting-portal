@@ -1,7 +1,8 @@
 import { Router } from 'express';
 import { query } from '../db.js';
 import { requireSession } from '../middleware/session.js';
-import { streamPurchaseOrderPdf } from '../services/pdf.js';
+import { streamPurchaseOrderPdf, renderPurchaseOrderPdfBuffer } from '../services/pdf.js';
+import { sendPurchaseOrderEmail } from '../services/email.js';
 
 export const router = Router();
 
@@ -103,9 +104,10 @@ async function nextPONumber(posArr) {
 }
 
 // POST /make-po — generate one PO per vendor from a quote's items
-// Body: { quoteNumber, items: [{ vendor, sku, title, description, quantity, buy_ex, image_url, variantId }], notes? }
+// Body: { quoteNumber, items: [{ vendor, sku, title, description, quantity, buy_ex, image_url, variantId }], notes?, supplierQuotes?: { [vendor]: 'SQ-...' } }
 router.post('/make-po', async (req, res) => {
-  const { quoteNumber, items, notes } = req.body || {};
+  const { quoteNumber, items, notes, supplierQuotes } = req.body || {};
+  const sqMap = supplierQuotes && typeof supplierQuotes === 'object' ? supplierQuotes : {};
 
   if (!quoteNumber || !Array.isArray(items) || items.length === 0) {
     return res.status(400).json({ error: 'quoteNumber and items required' });
@@ -154,6 +156,7 @@ router.post('/make-po', async (req, res) => {
         quoteNumber,
         vendor,
         supplier: supplierRecord,
+        supplierQuote: (sqMap[vendor] || '').toString().trim(),
         paymentTerms,
         date: new Date().toISOString(),
         status: 'draft',
@@ -199,6 +202,45 @@ router.get('/pos/:poNumber/pdf', async (req, res) => {
     await streamPurchaseOrderPdf(res, { po, company });
   } catch (err) {
     console.error('PO PDF error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /pos/:poNumber/send — email the PO PDF to either the supplier or the logged-in user
+// Body: { to: 'client' | 'self', emailOverride? }
+router.post('/pos/:poNumber/send', async (req, res) => {
+  try {
+    const { to, emailOverride } = req.body || {};
+    const audience = to === 'self' ? 'self' : 'supplier';
+
+    const pos = await kvGet('pos', []);
+    const posArr = Array.isArray(pos) ? pos : [];
+    const po = posArr.find(p => p.poNumber === req.params.poNumber);
+    if (!po) return res.status(404).json({ error: 'PO not found' });
+
+    if (!po.supplier && po.vendor) {
+      const suppliers = await kvGet('suppliers', {});
+      po.supplier = suppliers[po.vendor] || null;
+    }
+
+    const company = await kvGet('company_details', null);
+
+    // Resolve recipient
+    let recipient = (emailOverride || '').trim();
+    if (!recipient) {
+      if (audience === 'supplier') recipient = (po.supplier && po.supplier.email) || '';
+      else recipient = (req.user && req.user.email) || (company && company.email) || '';
+    }
+    if (!recipient) {
+      return res.status(400).json({ error: audience === 'supplier' ? 'No supplier email on file' : 'No recipient email available' });
+    }
+
+    const pdfBuffer = await renderPurchaseOrderPdfBuffer({ po, company });
+    await sendPurchaseOrderEmail({ to: recipient, po, company, pdfBuffer, audience });
+
+    res.json({ ok: true, sentTo: recipient });
+  } catch (err) {
+    console.error('Send PO error:', err);
     res.status(500).json({ error: err.message });
   }
 });
