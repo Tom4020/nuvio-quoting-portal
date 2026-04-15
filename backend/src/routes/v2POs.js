@@ -82,8 +82,28 @@ async function kvSet(key, value) {
   );
 }
 
+// Sequential PO numbering starting from 150 → PO000150, PO000151, …
+const PO_START = 150;
+async function nextPONumber(posArr) {
+  const counterRaw = await kvGet('po_counter', null);
+  let next = Number(counterRaw);
+  if (!Number.isFinite(next) || next < PO_START) {
+    // Derive from any existing POs so we never collide with pre-existing numbers
+    const highest = posArr
+      .map(p => {
+        const m = /^PO(\d{6,})$/.exec(String(p.poNumber || ''));
+        return m ? parseInt(m[1], 10) : 0;
+      })
+      .reduce((a, b) => Math.max(a, b), 0);
+    next = Math.max(PO_START, highest + 1);
+  }
+  const poNumber = `PO${String(next).padStart(6, '0')}`;
+  await kvSet('po_counter', next + 1);
+  return poNumber;
+}
+
 // POST /make-po — generate one PO per vendor from a quote's items
-// Body: { quoteNumber, items: [{ vendor, sku, title, description, quantity, buy_ex }], notes? }
+// Body: { quoteNumber, items: [{ vendor, sku, title, description, quantity, buy_ex, image_url, variantId }], notes? }
 router.post('/make-po', async (req, res) => {
   const { quoteNumber, items, notes } = req.body || {};
 
@@ -103,6 +123,8 @@ router.post('/make-po', async (req, res) => {
         sku: it.sku || '',
         title: it.title || '',
         description: it.description || it.title || '',
+        image_url: it.image_url || '',
+        variantId: it.variantId || null,
         quantity: qty,
         buy_ex: buy,
         line_total: +(qty * buy).toFixed(2)
@@ -116,32 +138,23 @@ router.post('/make-po', async (req, res) => {
 
     const created = [];
 
-    // Generate PO number pattern: PO-{quoteNumber}-{vendorSlug}
     for (const [vendor, vItems] of Object.entries(byVendor)) {
-      const vendorSlug = String(vendor)
-        .toUpperCase()
-        .replace(/[^A-Z0-9]+/g, '-')
-        .replace(/(^-|-$)/g, '')
-        .slice(0, 12) || 'VENDOR';
-
-      // Avoid collisions: suffix with counter if needed
-      let base = `PO-${quoteNumber}-${vendorSlug}`;
-      let poNumber = base;
-      let n = 1;
-      while (posArr.some(p => p.poNumber === poNumber)) {
-        n += 1;
-        poNumber = `${base}-${n}`;
-      }
+      const poNumber = await nextPONumber(posArr);
 
       const subtotal = +vItems.reduce((s, it) => s + it.line_total, 0).toFixed(2);
       const gst = +(subtotal * 0.10).toFixed(2);
       const total = +(subtotal + gst).toFixed(2);
 
+      const supplierRecord = suppliers[vendor] || null;
+      // Snapshot payment terms onto the PO so it stays stable if the supplier card changes later
+      const paymentTerms = (supplierRecord && supplierRecord.paymentTerms) || '';
+
       const po = {
         poNumber,
         quoteNumber,
         vendor,
-        supplier: suppliers[vendor] || null,
+        supplier: supplierRecord,
+        paymentTerms,
         date: new Date().toISOString(),
         status: 'draft',
         currency: 'AUD',
@@ -180,7 +193,10 @@ router.get('/pos/:poNumber/pdf', async (req, res) => {
       po.supplier = suppliers[po.vendor] || null;
     }
 
-    streamPurchaseOrderPdf(res, { po });
+    // Load Nuvio's own company details from kv_store (with env fallback inside pdf.js)
+    const company = await kvGet('company_details', null);
+
+    await streamPurchaseOrderPdf(res, { po, company });
   } catch (err) {
     console.error('PO PDF error:', err);
     res.status(500).json({ error: err.message });
