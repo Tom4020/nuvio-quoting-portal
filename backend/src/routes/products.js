@@ -85,6 +85,7 @@ router.get('/products', async (req, res) => {
                   title
                   sku
                   price
+                  image { url }
                   inventoryItem { id }
                 } }
               }
@@ -112,6 +113,7 @@ router.get('/products', async (req, res) => {
             title: v.title,
             sku: v.sku,
             price: Number(v.price),
+            image: v.image?.url || '',
             inventory_item_id: v.inventoryItem?.id
           }))
         });
