@@ -187,6 +187,20 @@ router.get('/pos/:poNumber/pdf', async (req, res) => {
   }
 });
 
+// DELETE /pos/:poNumber — remove a PO from the kv blob
+router.delete('/pos/:poNumber', async (req, res) => {
+  try {
+    const pos = await kvGet('pos', []);
+    const posArr = Array.isArray(pos) ? pos : [];
+    const next = posArr.filter(p => p.poNumber !== req.params.poNumber);
+    await kvSet('pos', next);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('Delete PO error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // POST /receive-po — adjust inventory for received quantities
 router.post('/receive-po', async (req, res) => {
   const { poId, lines } = req.body || {};
