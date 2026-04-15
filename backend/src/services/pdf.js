@@ -102,11 +102,30 @@ function fmt(n, currency = 'AUD') {
   return `${currency} ${num.toFixed(2)}`;
 }
 
+// Fetch a remote image as a Buffer for embedding into the PDF
+async function fetchImageBuffer(url) {
+  if (!url) return null;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const ct = (res.headers.get('content-type') || '').toLowerCase();
+    // pdfkit supports PNG and JPEG only
+    if (!ct.includes('image/png') && !ct.includes('image/jpeg') && !ct.includes('image/jpg')) {
+      // Try anyway — many CDNs don't set correct content-type
+    }
+    const arr = await res.arrayBuffer();
+    return Buffer.from(arr);
+  } catch {
+    return null;
+  }
+}
+
 // Stream a PDF purchase order to `res`.
-// Inputs: po = { poNumber, quoteNumber, date, vendor, supplier, items, subtotal, gst, total, notes, currency }
-// supplier = { contact, email, phone, address, notes }
-// items = [{ sku, description, quantity, buy_ex, line_total }]
-export function streamPurchaseOrderPdf(res, { po }) {
+// Inputs: po = { poNumber, quoteNumber, date, vendor, supplier, paymentTerms, items, subtotal, gst, total, notes, currency }
+// supplier = { contact, email, phone, address, paymentTerms, notes }
+// items = [{ sku, description, quantity, buy_ex, line_total, image_url }]
+// company (optional, from kv_store company_details) = { name, tradingName, contact, email, phone, address, abn, website }
+export async function streamPurchaseOrderPdf(res, { po, company: companyIn } = {}) {
   const doc = new PDFDocument({ size: 'A4', margin: 50 });
   const currency = po.currency || 'AUD';
 
@@ -114,12 +133,21 @@ export function streamPurchaseOrderPdf(res, { po }) {
   res.setHeader('Content-Disposition', `inline; filename="${po.poNumber}.pdf"`);
   doc.pipe(res);
 
+  // Pre-fetch all item images in parallel so rendering stays synchronous
+  const images = await Promise.all(
+    (po.items || []).map(it => fetchImageBuffer(it.image_url))
+  );
+
+  // kv_store company details take precedence; fall back to env vars
+  const c = companyIn || {};
   const company = {
-    name: process.env.COMPANY_NAME || 'Nuvio',
-    address: process.env.COMPANY_ADDRESS || '',
-    email: process.env.COMPANY_EMAIL || '',
-    phone: process.env.COMPANY_PHONE || '',
-    abn: process.env.COMPANY_ABN || ''
+    name: c.name || process.env.COMPANY_NAME || 'Nuvio',
+    address: c.address || process.env.COMPANY_ADDRESS || '',
+    email: c.email || process.env.COMPANY_EMAIL || '',
+    phone: c.phone || process.env.COMPANY_PHONE || '',
+    abn: c.abn || process.env.COMPANY_ABN || '',
+    contact: c.contact || '',
+    website: c.website || ''
   };
 
   // Header: company on left, PO title+number on right
@@ -128,6 +156,7 @@ export function streamPurchaseOrderPdf(res, { po }) {
   if (company.address) doc.text(company.address, 50, doc.y);
   if (company.email) doc.text(company.email, 50, doc.y);
   if (company.phone) doc.text(company.phone, 50, doc.y);
+  if (company.website) doc.text(company.website, 50, doc.y);
   if (company.abn) doc.text(`ABN: ${company.abn}`, 50, doc.y);
 
   doc.fontSize(18).fillColor('#000').text('PURCHASE ORDER', 300, 50, { align: 'right', width: 245 });
@@ -136,6 +165,10 @@ export function streamPurchaseOrderPdf(res, { po }) {
     .text(`Date: ${new Date(po.date || Date.now()).toLocaleDateString('en-AU')}`, 300, doc.y, { align: 'right', width: 245 });
   if (po.quoteNumber) {
     doc.text(`Quote ref: ${po.quoteNumber}`, 300, doc.y, { align: 'right', width: 245 });
+  }
+  const terms = po.paymentTerms || (po.supplier && po.supplier.paymentTerms) || '';
+  if (terms) {
+    doc.text(`Payment terms: ${terms}`, 300, doc.y, { align: 'right', width: 245 });
   }
 
   // Move below header
@@ -158,30 +191,45 @@ export function streamPurchaseOrderPdf(res, { po }) {
   doc.fontSize(10).fillColor('#000');
   doc.text(company.name, 320, doc.y, { width: 225 });
   if (company.address) doc.text(company.address, 320, doc.y, { width: 225 });
+  if (company.contact) doc.text('Attn: ' + company.contact, 320, doc.y, { width: 225 });
 
   doc.moveDown(2);
 
-  // Items table
+  // Items table — now includes a product image column
   const tableTop = Math.max(doc.y, 260);
-  const col = { sku: 50, desc: 130, qty: 360, unit: 410, total: 490 };
+  const col = { img: 50, sku: 110, desc: 175, qty: 355, unit: 400, total: 485 };
 
-  doc.fontSize(10).fillColor('#000').text('SKU', col.sku, tableTop, { width: 75 });
-  doc.text('Description', col.desc, tableTop, { width: 220 });
+  doc.fontSize(10).fillColor('#000').text('Image', col.img, tableTop, { width: 55 });
+  doc.text('SKU', col.sku, tableTop, { width: 60 });
+  doc.text('Description', col.desc, tableTop, { width: 175 });
   doc.text('Qty', col.qty, tableTop, { width: 40, align: 'right' });
-  doc.text('Unit (ex)', col.unit, tableTop, { width: 70, align: 'right' });
-  doc.text('Line total', col.total, tableTop, { width: 60, align: 'right' });
+  doc.text('Unit (ex)', col.unit, tableTop, { width: 80, align: 'right' });
+  doc.text('Line total', col.total, tableTop, { width: 65, align: 'right' });
   doc.moveTo(50, tableTop + 15).lineTo(550, tableTop + 15).strokeColor('#ccc').stroke();
 
   let y = tableTop + 22;
-  for (const it of (po.items || [])) {
-    doc.fontSize(10).fillColor('#000');
+  const rowItems = po.items || [];
+  for (let i = 0; i < rowItems.length; i++) {
+    const it = rowItems[i];
+    const img = images[i];
     const rowY = y;
-    doc.text(it.sku || '', col.sku, rowY, { width: 75 });
-    doc.text(it.description || it.title || '', col.desc, rowY, { width: 220 });
+    const rowMinH = 50; // give room for the image
+
+    doc.fontSize(10).fillColor('#000');
+    if (img) {
+      try {
+        doc.image(img, col.img, rowY, { fit: [50, 50] });
+      } catch {
+        // bad image payload — skip silently
+      }
+    }
+    doc.text(it.sku || '', col.sku, rowY, { width: 60 });
+    doc.text(it.description || it.title || '', col.desc, rowY, { width: 175 });
     doc.text(String(it.quantity || 0), col.qty, rowY, { width: 40, align: 'right' });
-    doc.text(fmt(it.buy_ex, currency), col.unit, rowY, { width: 70, align: 'right' });
-    doc.text(fmt(it.line_total, currency), col.total, rowY, { width: 60, align: 'right' });
-    y = Math.max(doc.y, rowY + 18) + 6;
+    doc.text(fmt(it.buy_ex, currency), col.unit, rowY, { width: 80, align: 'right' });
+    doc.text(fmt(it.line_total, currency), col.total, rowY, { width: 65, align: 'right' });
+
+    y = Math.max(doc.y, rowY + rowMinH) + 6;
     if (y > 720) { doc.addPage(); y = 60; }
   }
 
@@ -192,20 +240,27 @@ export function streamPurchaseOrderPdf(res, { po }) {
   const totalsX = 380;
   doc.fontSize(10).fillColor('#000');
   doc.text('Subtotal (ex GST)', totalsX, y, { width: 110, align: 'right' });
-  doc.text(fmt(po.subtotal, currency), col.total, y, { width: 60, align: 'right' });
+  doc.text(fmt(po.subtotal, currency), col.total, y, { width: 65, align: 'right' });
   y += 16;
 
   if (po.gst != null) {
     doc.text('GST (10%)', totalsX, y, { width: 110, align: 'right' });
-    doc.text(fmt(po.gst, currency), col.total, y, { width: 60, align: 'right' });
+    doc.text(fmt(po.gst, currency), col.total, y, { width: 65, align: 'right' });
     y += 16;
   }
 
   doc.fontSize(12).text('Total', totalsX, y, { width: 110, align: 'right' });
-  doc.text(fmt(po.total, currency), col.total, y, { width: 60, align: 'right' });
+  doc.text(fmt(po.total, currency), col.total, y, { width: 65, align: 'right' });
+  y += 24;
+
+  // Payment terms block (below totals, left-aligned)
+  if (terms) {
+    doc.fontSize(10).fillColor('#000').text('Payment terms', 50, y, { underline: true });
+    doc.fontSize(10).fillColor('#333').text(terms, 50, doc.y, { width: 300 });
+  }
 
   if (po.notes) {
-    doc.moveDown(3);
+    doc.moveDown(2);
     doc.fontSize(10).fillColor('#000').text('Notes', 50, doc.y, { underline: true });
     doc.fontSize(9).fillColor('#333').text(po.notes, 50, doc.y, { width: 495 });
   }
