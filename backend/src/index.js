@@ -21,6 +21,7 @@ import { router as clientsRouter } from './routes/clients.js';
 import { router as productsRouter } from './routes/products.js';
 import { router as v2POsRouter } from './routes/v2POs.js';
 import { router as v2SuppliersRouter } from './routes/v2Suppliers.js';
+import { router as v2CompanyDetailsRouter } from './routes/v2CompanyDetails.js';
 import { router as costsRouter } from './routes/costs.js';
 import { router as forecastRouter } from './routes/forecast.js';
 import { router as v2OrdersRouter } from './routes/v2Orders.js';
@@ -66,6 +67,9 @@ app.use('/', requireSession, v2POsRouter);
 
 // Suppliers: /suppliers, /suppliers/:vendor
 app.use('/', requireSession, v2SuppliersRouter);
+
+// Company details: GET/PUT /company-details (Nuvio's own business info)
+app.use('/', requireSession, v2CompanyDetailsRouter);
 
 // Costs: /costs, /variant-costs, /variant-supplier-codes
 app.use('/', requireSession, costsRouter);
