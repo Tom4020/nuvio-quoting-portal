@@ -1,4 +1,4 @@
-import { Router } from 'express';
+\import { Router } from 'express';
 import { requireAdmin } from '../middleware/session.js';
 
 export const router = Router();
@@ -60,47 +60,68 @@ async function shopifyGql(gql) {
   return data;
 }
 
-// GET /products — list products with variants and costs
+// GET /products — list products with variants and costs (paginated to pull everything)
 router.get('/products', async (req, res) => {
   try {
-    const gql = {
-      query: `query {
-        products(first: 250) {
-          edges { node {
-            id
-            title
-            vendor
-            status
-            variants(first: 100) {
-              edges { node {
-                id
-                title
-                sku
-                price
-                inventoryItem { id }
-              } }
-            }
-          } }
-        }
-      }`
-    };
+    const allProducts = [];
+    let cursor = null;
+    let hasNext = true;
 
-    const data = await shopifyGql(gql);
-    const products = data.data.products.edges.map(({ node: p }) => ({
-      id: p.id,
-      title: p.title,
-      vendor: p.vendor,
-      status: p.status,
-      variants: p.variants.edges.map(({ node: v }) => ({
-        id: v.id,
-        title: v.title,
-        sku: v.sku,
-        price: Number(v.price),
-        inventory_item_id: v.inventoryItem?.id
-      }))
-    }));
+    while (hasNext) {
+      const gql = {
+        query: `query($cursor: String) {
+          products(first: 250, after: $cursor) {
+            pageInfo { hasNextPage endCursor }
+            edges { node {
+              id
+              title
+              handle
+              vendor
+              status
+              featuredImage { url }
+              variants(first: 100) {
+                edges { node {
+                  id
+                  title
+                  sku
+                  price
+                  inventoryItem { id }
+                } }
+              }
+            } }
+          }
+        }`,
+        variables: { cursor }
+      };
 
-    res.json({ products });
+      const data = await shopifyGql(gql);
+      const page = data.data.products;
+
+      for (const { node: p } of page.edges) {
+        const numericProductId = Number(String(p.id).split('/').pop());
+        allProducts.push({
+          id: numericProductId,
+          productTitle: p.title,
+          title: p.title,
+          handle: p.handle,
+          vendor: p.vendor,
+          status: p.status,
+          image: p.featuredImage?.url || '',
+          variants: p.variants.edges.map(({ node: v }) => ({
+            id: Number(String(v.id).split('/').pop()),
+            title: v.title,
+            sku: v.sku,
+            price: Number(v.price),
+            inventory_item_id: v.inventoryItem?.id
+          }))
+        });
+      }
+
+      hasNext = page.pageInfo.hasNextPage;
+      cursor = page.pageInfo.endCursor;
+    }
+
+    res.json({ products: allProducts });
   } catch (err) {
     console.error('Products error:', err);
     res.status(err.status || 500).json({ error: err.message });
